@@ -1,11 +1,9 @@
-## My Project
+# eks-node-update-automation
+Automating EKS Managed Nodegroup update for Custom Amazon Linux 2 AMIs using EC2 Image Builder and Code Pipeline
 
-TODO: Fill this README out!
+## Solution Architecture
 
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
+![Architecture](./AutomatedManagedNodegroupUpdate.png)
 
 ## Security
 

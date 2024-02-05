@@ -1,0 +1,1088 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template contains resources and configuration scripts for building a
+  custom Amazon EKS AMI with Amazon EC2 Image Builder
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Kubernetes Configuration
+        Parameters:
+          - TestClusterName
+          - ProdClusterName
+          - DNSofALB
+      - Label:
+          default: Image Configuration
+        Parameters:
+          - Arch
+          - InstanceType
+          - S3Bucket
+          - EmailID
+Parameters:
+  TestClusterName:
+    Type: String
+    Description: Test Amazon EKS Cluster Name
+  ProdClusterName:
+    Type: String
+    Description: Production Amazon EKS Cluster Name
+  CISLatestLevel2AMI:
+    Type: String
+    Description: CIS Level 2 Latest AMI to be used as base AMI
+  Arch:
+    Type: String
+    Description: Architecture of image
+    Default: x86-64
+    AllowedValues:
+      - x86-64
+  Schedule:
+    Description: >
+      The frequency that determines when CloudWatch Events runs the rule that triggers the Lambda function.
+    Default: rate(10 minutes)
+    AllowedValues:
+      - rate(10 minutes)
+      - rate(1 day)
+      - rate(7 days)
+      - rate(30 days)
+    Type: String
+  CodeCommitRepositoryName:
+     Type: String
+     Description: CodeCommit Repository where the new AMI ID file will be pushed
+  CodeCommitBranch:
+     Type: String
+     Description: CodeCommit Branch where the new AMI ID file will be pushed
+  S3Bucket:
+     Type: String
+     Description: S3 Bucket to store the lambda function code
+  DNSofALB:
+     Type: String
+     Description: ALB DNS that will be used for testing application after node update
+  EmailID:
+     Type: String
+     Description: Email ID where the Codebuild  notification will be sent
+Mappings:
+  Instance:
+      x86-64:
+        source: amazon-linux-2-x86
+        type: t2.micro
+Resources:
+  EKSCISAMIComponent:
+    Type: 'AWS::ImageBuilder::Component'
+    Properties:
+      Name: EKS CIS AMI
+      Platform: Linux
+      Version: 1.0.0
+      Description: Component to create EKS Optimized AMI
+      Data: |
+        name: EKS AMI Setup
+        description: This steps installs EKS Components on the base image
+        schemaVersion: 1.0
+
+        parameters:
+          - EKSClusterVersion:
+              type: string
+              default: ""
+              description: EKS Cluster Version 
+          - CurrentNodegroupAMI:
+              type: string
+              default: ""
+              description: Current Nodegroup AMI
+          - UpdateReason:
+              type: string
+              default: ""
+              description: Nodegroup Update Type
+          - UpdatedNodegroups:
+              type: string
+              default: ""
+              description: Updated Nodegroup list
+        phases:
+          - name: build
+            steps:
+              - name: InstallPackages
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - sudo yum install -y git jq
+                    - git clone https://github.com/awslabs/amazon-eks-ami.git
+                    - sudo mkdir -p /var/tmp/worker
+                    - sudo mkdir -p /var/tmp/worker/log-collector-script/
+                    - sudo cp -R amazon-eks-ami/files/* /var/tmp/worker
+                    - sudo cp -R amazon-eks-ami/log-collector-script/linux/* /var/tmp/worker/log-collector-script/
+              - name: InstallAdditionalRepos
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - bash /var/tmp/amazon-eks-ami/scripts/install_additional_repos.sh
+              - name: CopyBinariesToUSRBIN
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - sudo chmod -R a+x /var/tmp/amazon-eks-ami/files/bin/
+                    - sudo mv /var/tmp/amazon-eks-ami/files/bin/* /usr/bin/
+              - name: UpgradeKernelVersion
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      export KUBERNETES_VERSION=$(/var/tmp/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
+                      export KERNEL_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .kernel_version)
+                      bash /var/tmp/amazon-eks-ami/scripts/upgrade_kernel.sh
+              - name: InstallK8sComponents
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - export KUBERNETES_VERSION=$(/var/tmp/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
+                    - export KUBERNETES_BUILD_DATE=$(/var/tmp/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f2 | cut -d "=" -f2)
+                    - export BINARY_BUCKET_NAME=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .binary_bucket_name)
+                    - export BINARY_BUCKET_REGION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .binary_bucket_region)
+                    - export DOCKER_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .docker_version)
+                    - export CONTAINERD_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .containerd_version)
+                    - export RUNC_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .runc_version)
+                    - export CNI_PLUGIN_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .cni_plugin_version)
+                    - export PULL_CNI_FROM_GITHUB=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .pull_cni_from_github)
+                    - export PAUSE_CONTAINER_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .pause_container_version)
+                    - export CACHE_CONTAINER_IMAGES=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .cache_container_images)
+                    - export WORKING_DIR="/var/tmp/worker"
+                    - export USER=ec2-user
+                    - export AWS_ACCESS_KEY_ID=""
+                    - export SSM_AGENT_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .ssm_agent_version)
+                    - bash /var/tmp/amazon-eks-ami/scripts/install-worker.sh
+              - name: Cleanup
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - bash /var/tmp/amazon-eks-ami/scripts/cleanup.sh
+                    - bash /var/tmp/amazon-eks-ami/scripts/cleanup_additional_repos.sh
+              - name: Validate
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - export KERNEL_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .kernel_version)
+                    - bash /var/tmp/amazon-eks-ami/scripts/validate.sh
+  
+  EKSCISAMIRecipe:
+    Type: 'AWS::ImageBuilder::ImageRecipe'
+    Properties:
+      Name: EKSCISAMIRecipe
+      Version: 1.0.0
+      ParentImage: !Ref CISLatestLevel2AMI
+      Description: Recipe to create EKS Optimized AMI
+      Components:
+        - ComponentArn: !Ref EKSCISAMIComponent
+      WorkingDirectory: /var/tmp
+  
+  InstanceRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      Comment: Role to be used by instance during image build.
+    Properties:
+      ManagedPolicyArns:
+        - 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/EC2InstanceProfileForImageBuilder'
+        - 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/AmazonS3ReadOnlyAccess'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+        Version: 2012-10-17
+      Path: /executionServiceEC2Role/
+  
+  InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /executionServiceEC2Role/
+      Roles:
+        - Ref: InstanceRole
+  
+  InstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Security group for imagebuilder
+  
+  EKSCISAMIInfrastructureConfiguration:
+    Type: 'AWS::ImageBuilder::InfrastructureConfiguration'
+    Properties:
+      Name: EKSCISAMIInfrastructureConfiguration
+      InstanceProfileName: !Ref InstanceProfile
+      Description: Infrastructure configuration to create EKS Optimized AMI
+      InstanceTypes:
+        - !FindInMap 
+          - Instance
+          - !Ref Arch
+          - type
+      TerminateInstanceOnFailure: false
+      SnsTopicArn: !Ref SNSTopic
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+  
+  EKSCISAMIPipeline:
+    Type: 'AWS::ImageBuilder::ImagePipeline'
+    Properties:
+      Name: EKSCISAMIPipeline
+      Description: Pipeline to create EKS Optimized AMI
+      ImageRecipeArn: !Ref EKSCISAMIRecipe
+      InfrastructureConfigurationArn: !Ref EKSCISAMIInfrastructureConfiguration
+      ImageTestsConfiguration:
+        ImageTestsEnabled: false
+        TimeoutMinutes: 90
+      Status: ENABLED
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: alias/aws/sns
+      Subscription:
+        - Endpoint:
+            Fn::GetAtt:
+              - "ImageBuilderEventFunction"
+              - "Arn"
+          Protocol: "lambda"
+      TopicName: "ImageBuilderTopic"
+
+  CodebuildStatusSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: alias/aws/sns
+      Subscription:
+        - Endpoint: !Ref EmailID
+          Protocol: "email"
+      TopicName: "CodebuildStatusTopic"
+
+  LambdaSchedule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: >
+        A schedule for the Lambda function..
+      ScheduleExpression: !Ref Schedule
+      State: ENABLED
+      Targets:
+        - Arn: !Sub ${CheckNewAMIReleaseFunction.Arn}
+          Id: LambdaSchedule
+
+  LambdaSchedulePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Sub ${CheckNewAMIReleaseFunction.Arn}
+      Principal: 'events.amazonaws.com'
+      SourceArn: !Sub ${LambdaSchedule.Arn}
+  
+  ImageBuilderEventLambdaPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Sub ${ImageBuilderEventFunction.Arn}
+      Principal: 'sns.amazonaws.com'
+      SourceArn: !Ref SNSTopic
+
+  CodebuildStatusNotificationLambdaPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Sub ${CodebuildStatusNotificationFunction.Arn}
+      Principal: 'sns.amazonaws.com'
+      SourceArn: !Ref SNSTopic
+
+  CheckNewAMIReleaseLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: check-new-ami-release-LambdaExecutionRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: 'logs:CreateLogGroup'
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+            - Effect: Allow
+              Action: 
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/test-another:*'
+            - Effect: Allow
+              Action:
+                - 'kms:Decrypt'
+                - 'imagebuilder:GetComponent'
+                - 'imagebuilder:TagResource'
+                - 'imagebuilder:GetImagePipeline'
+                - 'imagebuilder:GetImageRecipe'
+                - 'imagebuilder:StartImagePipelineExecution'
+                - 'imagebuilder:CreateImageRecipe'
+                - 'ssm:GetParameter'
+                - 'ec2:DescribeImages'
+                - 'imagebuilder:GetImage'
+                - 'eks:DescribeNodegroup'
+                - 'eks:ListNodegroups'
+                - 'imagebuilder:GetInfrastructureConfiguration'
+                - 'imagebuilder:UpdateImagePipeline'
+                - 'eks:DescribeCluster'
+              Resource: 
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:component:/EKS CIS AMI/*/*'
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:infrastructure-configuration/EKSCISAMIInfrastructureConfiguration'
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-pipeline/EKSCISAMIPipeline'
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-recipe/EKSCISAMIRecipe/*'
+              - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${TestClusterName}'
+
+  ImageBuildeREventLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: eks-node-update-LambdaExecutionRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: 'logs:CreateLogGroup'
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+            - Effect: Allow
+              Action: 
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/imageBuilderEvent:*'  
+            - Effect: Allow
+              Action:
+                - 'codecommit:GetBranch'
+                - 'codecommit:PutFile'
+                - 'codecommit:GetFile'
+              Resource: !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepo.Name}'
+
+  CodebuildStatusNotificationLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: codebuild-status-notification-LambdaExecutionRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: 'logs:CreateLogGroup'
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+            - Effect: Allow
+              Action: 
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/codebuildStatusNotification:*'  
+            - Effect: Allow
+              Action:
+                - 'sns:Publish'
+              Resource: !Ref 'CodebuildStatusSNSTopic'
+            - Effect: Allow
+              Action:
+                - 'codecommit:GetBranch'
+                - 'codecommit:GetFile'
+              Resource: !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepo.Name}'
+            
+  CheckNewAMIReleaseFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      FunctionName: checkNewAMIReleaseFunction
+      Role: !GetAtt CheckNewAMIReleaseLambdaExecutionRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 10
+      Environment:
+        Variables:
+          CLUSTER_NAME: !Ref TestClusterName
+          REGION: !Ref AWS::Region
+          IMAGE_BUILDER_PIPELINE: !Ref EKSCISAMIPipeline
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: checkNewAMIRelease.zip
+
+  ImageBuilderEventFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      FunctionName: imageBuilderEvent
+      Role: !GetAtt ImageBuildeREventLambdaExecutionRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 10
+      Environment:
+        Variables:
+          REPO_NAME: !Ref CodeCommitRepositoryName
+          BRANCH_NAME: !Ref CodeCommitBranch
+          REGION: !Ref AWS::Region
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: imageBuilderEvent.zip
+
+  CodebuildStatusNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      FunctionName: codebuildStatusNotification
+      Role: !GetAtt CodebuildStatusNotificationLambdaExecutionRole.Arn
+      Handler: lambda_function.lambda_handler
+      Timeout: 15
+      Environment:
+        Variables:
+          REPO_NAME: !Ref CodeCommitRepositoryName
+          BRANCH_NAME: !Ref CodeCommitBranch
+          REGION: !Ref AWS::Region
+          SNS_TOPIC: !Ref CodebuildStatusSNSTopic
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: codebuildStatusNotification.zip
+
+
+  EventRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "EventRule"
+      EventPattern: 
+        {
+          "$or": [{
+            "source": ["aws.codebuild"],
+            "detail-type": ["CodeBuild Build State Change"],
+            "detail": {
+              "build-status": ["FAILED"],
+              "project-name": ["test-eks-custom-nodegroup-update", "eks-new-ami-testapp"]
+            }
+          }, {
+            "source": ["aws.codebuild"],
+            "detail-type": ["CodeBuild Build State Change"],
+            "detail": {
+              "build-status": ["SUCCEEDED", "FAILED"],
+              "project-name": ["prod-eks-custom-nodegroup-update"]
+            }
+          }]
+        }
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "CodebuildStatusNotificationFunction"
+              - "Arn"
+          Id: "TargetFunctionV1"
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "CodebuildStatusNotificationFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "EventRule"
+          - "Arn"
+    
+  CodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref CodeCommitRepositoryName
+      RepositoryDescription: This is a repository for eks-node-update.
+  
+  TestCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - 'ec2:DescribeImages'
+                - 'eks:UpdateNodegroupVersion'
+                - 'eks:DescribeNodegroup'
+                - 'eks:ListNodegroups'
+                - 'ec2:DescribeLaunchTemplateVersions'
+                - 'ec2:RunInstances'
+                - 'ec2:CreateLaunchTemplateVersion'
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                Effect: Allow
+                Resource:
+                - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/test-eks-custom-nodegroup-update'
+                - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/test-eks-custom-nodegroup-update:*'
+              - Action:
+                - 's3:PutObject'
+                - 's3:GetObject'
+                - 's3:GetObjectVersion'
+                - 's3:GetBucketAcl'
+                - 's3:GetBucketLocation'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactStoreBucket}*'
+              - Action: 'codecommit:GitPull'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepositoryName}'
+              - Action:
+                - 'codebuild:CreateReportGroup'
+                - 'codebuild:CreateReport'
+                - 'codebuild:UpdateReport'
+                - 'codebuild:BatchPutTestCases'
+                - 'codebuild:BatchPutCodeCoverages'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/test-eks-custom-nodegroup-update-*'
+
+  ProdCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - 'ec2:DescribeImages'
+                - 'eks:UpdateNodegroupVersion'
+                - 'eks:DescribeNodegroup'
+                - 'eks:ListNodegroups'
+                - 'ec2:DescribeLaunchTemplateVersions'
+                - 'ec2:RunInstances'
+                - 'ec2:CreateLaunchTemplateVersion'
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                Effect: Allow
+                Resource:
+                - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/prod-eks-custom-nodegroup-update'
+                - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/prod-eks-custom-nodegroup-update:*'
+              - Action:
+                - 's3:PutObject'
+                - 's3:GetObject'
+                - 's3:GetObjectVersion'
+                - 's3:GetBucketAcl'
+                - 's3:GetBucketLocation'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactStoreBucket}*'
+              - Action: 'codecommit:GitPull'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommitRepositoryName}'
+              - Action:
+                - 'codebuild:CreateReportGroup'
+                - 'codebuild:CreateReport'
+                - 'codebuild:UpdateReport'
+                - 'codebuild:BatchPutTestCases'
+                - 'codebuild:BatchPutCodeCoverages'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/prod-eks-custom-nodegroup-update-*'
+  
+  ApplicationTestingCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: ['sts:AssumeRole']
+          Effect: Allow
+          Principal:
+            Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                Effect: Allow
+                Resource:
+                - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/eks-new-ami-testapp'
+                - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/eks-new-ami-testapp:*'
+              - Action:
+                - 's3:PutObject'
+                - 's3:GetObject'
+                - 's3:GetObjectVersion'
+                - 's3:GetBucketAcl'
+                - 's3:GetBucketLocation'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactStoreBucket}*'
+              - Action:
+                - 'codebuild:CreateReportGroup'
+                - 'codebuild:CreateReport'
+                - 'codebuild:UpdateReport'
+                - 'codebuild:BatchPutTestCases'
+                - 'codebuild:BatchPutCodeCoverages'
+                Effect: Allow
+                Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:report-group/eks-new-ami-testapp-*'
+
+  TestNodeGroupUpdateCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: test-eks-custom-nodegroup-update
+      Description: This CodeBuild Project is used to update the nodegroup in the test Amazon EKS cluster
+      Artifacts:
+        Type: NO_ARTIFACTS
+      ServiceRole: !GetAtt TestCodeBuildRole.Arn
+      TimeoutInMinutes: 480
+      QueuedTimeoutInMinutes: 60
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+        - Name: CLUSTER_NAME
+          Type: PLAINTEXT
+          Value: !Ref TestClusterName
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            pre_build:
+              commands:
+                - image_builder_ami='ami-08c3b9c23c8c1605e'
+                - nodegroups_to_update='custom-mng,custom-mng-new'
+                - echo $nodegroups_to_update
+
+            build:
+              commands:
+                
+                - |
+                  for nodegroup in ${nodegroups_to_update//,/ }
+                  do
+                    echo $nodegroup
+                    current_nodegroup_details=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup)
+                    if [ $(echo $current_nodegroup_details | jq -r '.nodegroup.amiType') == 'CUSTOM' ];
+                    then
+                            launchTemplateName=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --query 'nodegroup.launchTemplate.name' --output=text)
+                            echo $launchTemplateName
+                            launchTemplateVersion=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --query 'nodegroup.launchTemplate.version' --output=text) 
+                            echo $launchTemplateVersion
+                            newLaunchTemplateVersion=$(aws ec2 create-launch-template-version --launch-template-name $launchTemplateName --source-version $launchTemplateVersion --launch-template-data "{\"ImageId\":\"$image_builder_ami\"}" --query 'LaunchTemplateVersion.VersionNumber' --output=text)
+                            echo $newLaunchTemplateVersion
+                            aws eks update-nodegroup-version --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --launch-template "{\"name\": \"$launchTemplateName\", \"version\": \"$newLaunchTemplateVersion\"}"
+                            
+                            i=0;
+                            while [ $i == 0 ]
+                            do
+                                  nodegroup_status=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --query 'nodegroup.status' --output=text)
+                                  if [ $nodegroup_status == 'DEGRADED' ]
+                                  then
+                                    echo "The nodegroup $nodegroup is in DEGRADED state"
+                                    exit 1
+                                  elif [ $nodegroup_status != 'ACTIVE' ] && [ $nodegroup_status != 'DEGRADED' ]
+                                  then
+                                    echo "The nodegroup is not in ACTIVE state"; 
+                                    sleep 20
+                                  elif [ $nodegroup_status == 'ACTIVE' ]
+                                  then
+                                    i=1
+                                  fi
+                            done
+                    fi
+                  done
+
+  ApplicationTestingCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: eks-new-ami-testapp
+      Description: This CodeBuild Project is used to test the application APIs after the nodegroups have been updated
+      Artifacts:
+        Type: NO_ARTIFACTS
+      ServiceRole: !GetAtt ApplicationTestingCodeBuildRole.Arn
+      TimeoutInMinutes: 480
+      QueuedTimeoutInMinutes: 60
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+        - Name: CLUSTER_NAME
+          Type: PLAINTEXT
+          Value: !Ref TestClusterName
+        - Name: DNSofALB
+          Type: PLAINTEXT
+          Value: !Ref DNSofALB
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            pre_build:
+              commands:
+                - aws eks update-kubeconfig --name $CLUSTER_NAME
+            build:
+              commands:
+                - |
+                  for path in "" new/ sku
+                  do
+                    status_code=$(curl -o /dev/null -s -w "%{http_code}\n" $DNSofALB/$path)
+                    echo $status_code
+                    if [ $status_code != 200 ]; then
+                        echo "The $path is not returning 200 status code"
+                        exit 1
+                    fi  
+                  done
+                - |
+                  POD=$(kubectl get pod -n workshop -l app=frontend -o jsonpath="{.items[0].metadata.name}")
+                  
+                  kubectl exec -n workshop $POD -- ls
+                  if [ $? != 0 ]; then
+                    echo "kubectl exec command is not successful and returning $? status code"
+                    exit 1
+                  fi
+                  
+                  kubectl logs -n workshop $POD
+                  if [ $? != 0 ]; then
+                    echo "kubectl logs command is not successful and returning $? status code"
+                    exit 1
+                  fi
+
+  ProdNodeGroupUpdateCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: prod-eks-custom-nodegroup-update
+      Description: This CodeBuild Project is used to update the nodegroup in the production Amazon EKS cluster
+      Artifacts:
+        Type: NO_ARTIFACTS
+      ServiceRole: !GetAtt ProdCodeBuildRole.Arn
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+        - Name: CLUSTER_NAME
+          Type: PLAINTEXT
+          Value: !Ref ProdClusterName
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+
+          phases:
+            pre_build:
+              commands:
+                - image_builder_ami='ami-08c3b9c23c8c1605e'
+                - nodegroups_to_update='custom-mng,custom-mng-new'
+                - echo $nodegroups_to_update
+
+            build:
+              commands:
+                
+                - |
+                  for nodegroup in ${nodegroups_to_update//,/ }
+                  do
+                    echo $nodegroup
+                    current_nodegroup_details=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup)
+                    if [ $(echo $current_nodegroup_details | jq -r '.nodegroup.amiType') == 'CUSTOM' ];
+                    then
+                            launchTemplateName=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --query 'nodegroup.launchTemplate.name' --output=text)
+                            echo $launchTemplateName
+                            launchTemplateVersion=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --query 'nodegroup.launchTemplate.version' --output=text) 
+                            echo $launchTemplateVersion
+                            newLaunchTemplateVersion=$(aws ec2 create-launch-template-version --launch-template-name $launchTemplateName --source-version $launchTemplateVersion --launch-template-data "{\"ImageId\":\"$image_builder_ami\"}" --query 'LaunchTemplateVersion.VersionNumber' --output=text)
+                            echo $newLaunchTemplateVersion
+                            aws eks update-nodegroup-version --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --launch-template "{\"name\": \"$launchTemplateName\", \"version\": \"$newLaunchTemplateVersion\"}"
+                            
+                            i=0;
+                            while [ $i == 0 ]
+                            do
+                                  nodegroup_status=$(aws eks describe-nodegroup --cluster-name $CLUSTER_NAME --nodegroup-name $nodegroup --query 'nodegroup.status' --output=text)
+                                  if [ $nodegroup_status == 'DEGRADED' ]
+                                  then
+                                    echo "The nodegroup $nodegroup is in DEGRADED state"
+                                    exit 1
+                                  elif [ $nodegroup_status != 'ACTIVE' ] && [ $nodegroup_status != 'DEGRADED' ]
+                                  then
+                                    echo "The nodegroup is not in ACTIVE state"; 
+                                    sleep 20
+                                  elif [ $nodegroup_status == 'ACTIVE' ]
+                                  then
+                                    i=1
+                                  fi
+                            done
+                    fi
+                  done
+
+  CodePipelineArtifactStoreBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketEncryption: 
+          ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+
+  CodePipelineArtifactStoreBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref CodePipelineArtifactStoreBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Join 
+              - ''
+              - - !GetAtt 
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'aws:kms'
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Join 
+              - ''
+              - - !GetAtt 
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  AmazonCloudWatchEventRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'codepipeline:StartPipelineExecution'
+                Resource: !Join 
+                  - ''
+                  - - 'arn:aws:codepipeline:'
+                    - !Ref 'AWS::Region'
+                    - ':'
+                    - !Ref 'AWS::AccountId'
+                    - ':'
+                    - !Ref AppPipeline
+
+  AmazonCloudWatchEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Join 
+            - ''
+            - - 'arn:aws:codecommit:'
+              - !Ref 'AWS::Region'
+              - ':'
+              - !Ref 'AWS::AccountId'
+              - ':'
+              - !Ref CodeCommitRepositoryName
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - main
+      Targets:
+        - Arn: !Join 
+            - ''
+            - - 'arn:aws:codepipeline:'
+              - !Ref 'AWS::Region'
+              - ':'
+              - !Ref 'AWS::AccountId'
+              - ':'
+              - !Ref AppPipeline
+          RoleArn: !GetAtt 
+            - AmazonCloudWatchEventRole
+            - Arn
+          Id: codepipeline-AppPipeline
+
+  AppPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: codecommit-events-pipeline
+      RoleArn: !GetAtt 
+        - CodePipelineServiceRole
+        - Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                BranchName: !Ref CodeCommitBranch
+                RepositoryName: !Ref CodeCommitRepositoryName
+                PollForSourceChanges: false
+              RunOrder: 1
+        - Name: Update_NodeGroup_Stage_EKS_Cluster
+          Actions:
+            - Name: Update_NodeGroup_Stage_EKS_Cluster
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref TestNodeGroupUpdateCodeBuildProject
+              RunOrder: 1
+        - Name: Test_Application_in_Stage_EKS_Cluster
+          Actions:
+            - Name: Test_Application_in_Stage_EKS_Cluster
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref ApplicationTestingCodeBuildProject
+              RunOrder: 1
+        - Name: ManualApproval
+          Actions:
+            - Name: ManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: '1'
+                Provider: Manual
+              RunOrder: 1
+        - Name: Update_NodeGroup_Prod_EKS_Cluster
+          Actions:
+            - Name: Update_NodeGroup_Prod_EKS_Cluster
+              InputArtifacts:
+                - Name: SourceOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref ProdNodeGroupUpdateCodeBuildProject
+              RunOrder: 1
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactStoreBucket
+
+  CodePipelineServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWS-CodePipeline-Service-3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codecommit:CancelUploadArchive'
+                  - 'codecommit:GetBranch'
+                  - 'codecommit:GetCommit'
+                  - 'codecommit:GetUploadArchiveStatus'
+                  - 'codecommit:UploadArchive'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuildBatches'
+                  - 'codebuild:StartBuildBatch'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'elasticbeanstalk:*'
+                  - 'ec2:*'
+                  - 'elasticloadbalancing:*'
+                  - 'autoscaling:*'
+                  - 'cloudwatch:*'
+                  - 's3:*'
+                  - 'sns:*'
+                  - 'cloudformation:*'
+                  - 'rds:*'
+                  - 'sqs:*'
+                  - 'ecs:*'
+                Resource: '*'
