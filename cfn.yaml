@@ -86,7 +86,7 @@ Resources:
               type: string
               default: ""
               description: Current Nodegroup AMI
-          - UpdateReason:
+          - UpdateType:
               type: string
               default: ""
               description: Nodegroup Update Type
@@ -201,6 +201,7 @@ Resources:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
       GroupDescription: Security group for imagebuilder
+
   
   EKSCISAMIInfrastructureConfiguration:
     Type: 'AWS::ImageBuilder::InfrastructureConfiguration'
@@ -314,15 +315,12 @@ Resources:
               Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/test-another:*'
             - Effect: Allow
               Action:
-                - 'kms:Decrypt'
                 - 'imagebuilder:GetComponent'
                 - 'imagebuilder:TagResource'
                 - 'imagebuilder:GetImagePipeline'
                 - 'imagebuilder:GetImageRecipe'
                 - 'imagebuilder:StartImagePipelineExecution'
                 - 'imagebuilder:CreateImageRecipe'
-                - 'ssm:GetParameter'
-                - 'ec2:DescribeImages'
                 - 'imagebuilder:GetImage'
                 - 'eks:DescribeNodegroup'
                 - 'eks:ListNodegroups'
@@ -330,11 +328,18 @@ Resources:
                 - 'imagebuilder:UpdateImagePipeline'
                 - 'eks:DescribeCluster'
               Resource: 
-              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:component:/EKS CIS AMI/*/*'
-              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:infrastructure-configuration/EKSCISAMIInfrastructureConfiguration'
-              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-pipeline/EKSCISAMIPipeline'
-              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-recipe/EKSCISAMIRecipe/*'
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:component/eks-cis-ami/*/*'
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:infrastructure-configuration/ekscisamiinfrastructureconfiguration'
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-pipeline/ekscisamipipeline'
+              - !Sub 'arn:aws:imagebuilder:${AWS::Region}:${AWS::AccountId}:image-recipe/ekscisamirecipe/*'
               - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${TestClusterName}'
+              - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:nodegroup/${TestClusterName}/*/*'
+            - Effect: Allow
+              Action:
+                - 'kms:Decrypt'
+                - 'ssm:GetParameter'
+                - 'ec2:DescribeImages'
+              Resource: '*'
 
   ImageBuildeREventLambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -684,8 +689,8 @@ Resources:
           phases:
             pre_build:
               commands:
-                - image_builder_ami='ami-08c3b9c23c8c1605e'
-                - nodegroups_to_update='custom-mng,custom-mng-new'
+                - image_builder_ami=$(cat releaseHistory.json | jq -r '.[-1].NewAMIID')
+                - nodegroups_to_update=$(cat releaseHistory.json | jq -r '.[-1].UpdatedNodegroups')
                 - echo $nodegroups_to_update
 
             build:
@@ -813,8 +818,8 @@ Resources:
           phases:
             pre_build:
               commands:
-                - image_builder_ami='ami-08c3b9c23c8c1605e'
-                - nodegroups_to_update='custom-mng,custom-mng-new'
+                - image_builder_ami=$(cat releaseHistory.json | jq -r '.[-1].NewAMIID')
+                - nodegroups_to_update=$(cat releaseHistory.json | jq -r '.[-1].UpdatedNodegroups')
                 - echo $nodegroups_to_update
 
             build:
