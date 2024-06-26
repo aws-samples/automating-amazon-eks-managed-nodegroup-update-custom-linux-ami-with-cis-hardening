@@ -557,6 +557,7 @@ Resources:
                 - 'ec2:DescribeLaunchTemplateVersions'
                 - 'ec2:RunInstances'
                 - 'ec2:CreateLaunchTemplateVersion'
+                - 'ec2:CreateTags'
                 Effect: Allow
                 Resource: '*'
               - Action:
@@ -611,6 +612,7 @@ Resources:
                 - 'ec2:DescribeLaunchTemplateVersions'
                 - 'ec2:RunInstances'
                 - 'ec2:CreateLaunchTemplateVersion'
+                - 'ec2:CreateTags'
                 Effect: Allow
                 Resource: '*'
               - Action:
@@ -1112,4 +1114,4 @@ Resources:
                   - 'rds:*'
                   - 'sqs:*'
                   - 'ecs:*'
-                Resource: '*'
+                Resource: '*' 
