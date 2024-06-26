@@ -103,61 +103,83 @@ Resources:
                   commands:
                     - sudo yum install -y git jq
                     - git clone https://github.com/awslabs/amazon-eks-ami.git
-                    - sudo mkdir -p /var/tmp/worker
-                    - sudo mkdir -p /var/tmp/worker/log-collector-script/
-                    - sudo cp -R amazon-eks-ami/files/* /var/tmp/worker
-                    - sudo cp -R amazon-eks-ami/log-collector-script/linux/* /var/tmp/worker/log-collector-script/
+                    - sudo mkdir -p /ib-working-dir/worker
+                    - sudo mkdir -p /ib-working-dir/worker/log-collector-script/
+                    - sudo cp -R amazon-eks-ami/templates/shared/runtime/* /ib-working-dir/worker
+                    - sudo cp -R amazon-eks-ami/templates/al2/runtime/* /ib-working-dir/worker
+                    - sudo cp -R amazon-eks-ami/log-collector-script/linux/* /ib-working-dir/worker/log-collector-script/
               - name: InstallAdditionalRepos
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - bash /var/tmp/amazon-eks-ami/scripts/install_additional_repos.sh
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/install-additional-repos.sh
               - name: CopyBinariesToUSRBIN
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - sudo chmod -R a+x /var/tmp/amazon-eks-ami/files/bin/
-                    - sudo mv /var/tmp/amazon-eks-ami/files/bin/* /usr/bin/
+                    - sudo chmod -R a+x /ib-working-dir/worker/bin/
+                    - sudo mv /ib-working-dir/worker/bin/* /usr/bin/
               - name: UpgradeKernelVersion
                 action: ExecuteBash
                 inputs:
                   commands:
                     - |
-                      export KUBERNETES_VERSION=$(/var/tmp/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
-                      export KERNEL_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .kernel_version)
-                      bash /var/tmp/amazon-eks-ami/scripts/upgrade_kernel.sh
+                      export KUBERNETES_VERSION=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
+                      export KERNEL_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .kernel_version)
+                      bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/upgrade-kernel.sh
+              - name: EnableFips
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      export ENABLE_FIPS=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .enable_fips)
+                      bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/enable-fips.sh
+              - name: Reboot
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      if [ -f "reboot_done" ]; then
+                         echo 'Reboot was done'
+                         exit 0
+                      else
+                         touch /ib-working-dir/reboot_done
+                         sudo reboot
+                         exit 194
+                      fi
               - name: InstallK8sComponents
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - export KUBERNETES_VERSION=$(/var/tmp/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
-                    - export KUBERNETES_BUILD_DATE=$(/var/tmp/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f2 | cut -d "=" -f2)
-                    - export BINARY_BUCKET_NAME=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .binary_bucket_name)
-                    - export BINARY_BUCKET_REGION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .binary_bucket_region)
-                    - export DOCKER_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .docker_version)
-                    - export CONTAINERD_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .containerd_version)
-                    - export RUNC_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .runc_version)
-                    - export CNI_PLUGIN_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .cni_plugin_version)
-                    - export PULL_CNI_FROM_GITHUB=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .pull_cni_from_github)
-                    - export PAUSE_CONTAINER_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .pause_container_version)
-                    - export CACHE_CONTAINER_IMAGES=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .cache_container_images)
-                    - export WORKING_DIR="/var/tmp/worker"
+                    - export KUBERNETES_VERSION=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
+                    - export KUBERNETES_BUILD_DATE=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f2 | cut -d "=" -f2)
+                    - export BINARY_BUCKET_NAME=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .binary_bucket_name)
+                    - export BINARY_BUCKET_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .binary_bucket_region)
+                    - export DOCKER_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .docker_version)
+                    - export CONTAINERD_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .containerd_version)
+                    - export RUNC_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .runc_version)
+                    - export CNI_PLUGIN_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .cni_plugin_version)
+                    - export PULL_CNI_FROM_GITHUB=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .pull_cni_from_github)
+                    - export PAUSE_CONTAINER_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .pause_container_version)
+                    - export CACHE_CONTAINER_IMAGES=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .cache_container_images)
+                    - export WORKING_DIR="/ib-working-dir/worker"
                     - export USER=ec2-user
                     - export AWS_ACCESS_KEY_ID=""
-                    - export SSM_AGENT_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .ssm_agent_version)
-                    - bash /var/tmp/amazon-eks-ami/scripts/install-worker.sh
+                    - export AWS_SECRET_ACCESS_KEY=""
+                    - export SSM_AGENT_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .ssm_agent_version)
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/install-worker.sh
               - name: Cleanup
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - bash /var/tmp/amazon-eks-ami/scripts/cleanup.sh
-                    - bash /var/tmp/amazon-eks-ami/scripts/cleanup_additional_repos.sh
+                    - bash /ib-working-dir/amazon-eks-ami/templates/shared/provisioners/cleanup.sh
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/cleanup-additional-repos.sh
               - name: Validate
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - export KERNEL_VERSION=$(cat /var/tmp/amazon-eks-ami/eks-worker-al2-variables.json | jq -r .kernel_version)
-                    - bash /var/tmp/amazon-eks-ami/scripts/validate.sh
+                    - export KERNEL_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .kernel_version)
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/validate.sh
   
   EKSCISAMIRecipe:
     Type: 'AWS::ImageBuilder::ImageRecipe'
@@ -168,7 +190,7 @@ Resources:
       Description: Recipe to create EKS Optimized AMI
       Components:
         - ComponentArn: !Ref EKSCISAMIComponent
-      WorkingDirectory: /var/tmp
+      WorkingDirectory: /ib-working-dir
   
   InstanceRole:
     Type: 'AWS::IAM::Role'
@@ -238,7 +260,7 @@ Resources:
       Subscription:
         - Endpoint:
             Fn::GetAtt:
-              - "ImageBuilderEventFunction"
+              - "UpdateCodeCommitRepoFunction"
               - "Arn"
           Protocol: "lambda"
       TopicName: "ImageBuilderTopic"
@@ -271,11 +293,11 @@ Resources:
       Principal: 'events.amazonaws.com'
       SourceArn: !Sub ${LambdaSchedule.Arn}
   
-  ImageBuilderEventLambdaPermission:
+  UpdateCodeCommitRepoLambdaPermission:
     Type: "AWS::Lambda::Permission"
     Properties:
       Action: 'lambda:InvokeFunction'
-      FunctionName: !Sub ${ImageBuilderEventFunction.Arn}
+      FunctionName: !Sub ${UpdateCodeCommitRepoFunction.Arn}
       Principal: 'sns.amazonaws.com'
       SourceArn: !Ref SNSTopic
 
@@ -341,7 +363,7 @@ Resources:
                 - 'ec2:DescribeImages'
               Resource: '*'
 
-  ImageBuildeREventLambdaExecutionRole:
+  UpdateCodeCommitRepoLambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -366,7 +388,7 @@ Resources:
               Action: 
                 - 'logs:CreateLogStream'
                 - 'logs:PutLogEvents'
-              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/imageBuilderEvent:*'  
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/updateCodeCommitRepo:*'  
             - Effect: Allow
               Action:
                 - 'codecommit:GetBranch'
@@ -425,14 +447,14 @@ Resources:
           IMAGE_BUILDER_PIPELINE: !Ref EKSCISAMIPipeline
       Code:
         S3Bucket: !Ref S3Bucket
-        S3Key: checkNewAMIRelease.zip
+        S3Key: checkNewAMIReleaseFunction.zip
 
-  ImageBuilderEventFunction:
+  UpdateCodeCommitRepoFunction:
     Type: AWS::Lambda::Function
     Properties:
       Runtime: python3.11
-      FunctionName: imageBuilderEvent
-      Role: !GetAtt ImageBuildeREventLambdaExecutionRole.Arn
+      FunctionName: updateCodeCommitRepo
+      Role: !GetAtt UpdateCodeCommitRepoLambdaExecutionRole.Arn
       Handler: lambda_function.lambda_handler
       Timeout: 10
       Environment:
@@ -442,7 +464,7 @@ Resources:
           REGION: !Ref AWS::Region
       Code:
         S3Bucket: !Ref S3Bucket
-        S3Key: imageBuilderEvent.zip
+        S3Key: updateCodeCommitRepo.zip
 
   CodebuildStatusNotificationFunction:
     Type: AWS::Lambda::Function

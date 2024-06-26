@@ -114,7 +114,7 @@ def lambda_handler(event, context):
                         ]
                     },
                    {
-                       'name': 'UpdateReason',
+                       'name': 'UpdateType',
                        'value': [
                            UPDATE_REASON,
                         ]
@@ -128,7 +128,7 @@ def lambda_handler(event, context):
                  ]
                 }],
                 parentImage=LATEST_CIS_LEVEL2_AMI_ID,
-                workingDirectory='/var/tmp'
+                workingDirectory='/ib-working-dir'
             )['imageRecipeArn']
             
             
