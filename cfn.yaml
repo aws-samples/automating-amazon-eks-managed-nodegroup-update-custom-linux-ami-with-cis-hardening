@@ -10,7 +10,7 @@ Metadata:
         Parameters:
           - TestClusterName
           - ProdClusterName
-          - DNSofALB
+          - LoadBalancerDNS
       - Label:
           default: Image Configuration
         Parameters:
@@ -22,12 +22,14 @@ Parameters:
   TestClusterName:
     Type: String
     Description: Test Amazon EKS Cluster Name
+    Default: "eks-cluster-staging"
   ProdClusterName:
     Type: String
     Description: Production Amazon EKS Cluster Name
+    Default: "eks-cluster-prod"
   CISLatestLevel2AMI:
     Type: String
-    Description: CIS Level 2 Latest AMI to be used as base AMI
+    Description: CIS Level 2 Latest AMI to be used as base AMI. The latest CIS Level 2 AMI in a region can be found using the aws cli command aws ec2 describe-images --filters "Name=name,Values=CIS Amazon Linux 2 Benchmark*- Level 2*"  --query 'Images | sort_by(@, &CreationDate)[-1].ImageId'
   Arch:
     Type: String
     Description: Architecture of image
@@ -46,11 +48,11 @@ Parameters:
     Type: String
   S3Bucket:
      Type: String
-     Description: S3 Bucket to store the lambda function code
+     Description: S3 Bucket where the AWS lambda function code is uplaoded
   ReleaseNotesS3Bucket:
      Type: String
      Description: S3 Bucket to store the release notes
-  DNSofALB:
+  LoadBalancerDNS:
      Type: String
      Description: ALB DNS that will be used for testing application after node update
   EmailID:
@@ -753,9 +755,9 @@ Resources:
         - Name: CLUSTER_NAME
           Type: PLAINTEXT
           Value: !Ref TestClusterName
-        - Name: DNSofALB
+        - Name: LoadBalancerDNS
           Type: PLAINTEXT
-          Value: !Ref DNSofALB
+          Value: !Ref LoadBalancerDNS
       Source:
         Type: NO_SOURCE
         BuildSpec: |
@@ -770,7 +772,7 @@ Resources:
                 - |
                   for path in "" new/ sku
                   do
-                    status_code=$(curl -o /dev/null -s -w "%{http_code}\n" $DNSofALB/$path)
+                    status_code=$(curl -o /dev/null -s -w "%{http_code}\n" $LoadBalancerDNS/$path)
                     echo $status_code
                     if [ $status_code != 200 ]; then
                         echo "The $path is not returning 200 status code"
