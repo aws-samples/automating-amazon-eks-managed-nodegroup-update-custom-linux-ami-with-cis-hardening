@@ -29,7 +29,7 @@ Parameters:
     Default: "eks-cluster-prod"
   CISLatestLevel2AMI:
     Type: String
-    Description: CIS Level 2 Latest AMI to be used as base AMI. The latest CIS Level 2 AMI in a region can be found using the aws cli command aws ec2 describe-images --filters "Name=name,Values=CIS Amazon Linux 2023 Benchmark*- Level 2*"  --query 'Images | sort_by(@, &CreationDate)[-1].ImageId'
+    Description: CIS Level 2 Latest AMI to be used as base AMI. The latest CIS Level 2 AMI in a region can be found using the aws cli command aws ec2 describe-images --filters "Name=name,Values=CIS Amazon Linux 2 Benchmark*- Level 2*"  --query 'Images | sort_by(@, &CreationDate)[-1].ImageId'
   Arch:
     Type: String
     Description: Architecture of image
@@ -62,7 +62,7 @@ Mappings:
   Instance:
       x86-64:
         source: amazon-linux-2-x86
-        type: t2.large
+        type: t2.micro
 Resources:
   EKSCISAMIComponent:
     Type: 'AWS::ImageBuilder::Component'
@@ -101,116 +101,84 @@ Resources:
                 inputs:
                   commands:
                     - sudo yum install -y git jq
-                    - sudo git clone https://github.com/awslabs/amazon-eks-ami.git
+                    - git clone https://github.com/awslabs/amazon-eks-ami.git
                     - sudo mkdir -p /ib-working-dir/worker
-                    - sudo mkdir -p /ib-working-dir/worker/rootfs
-                    - sudo mkdir -p /ib-working-dir/worker/shared
-                    - sudo mkdir -p /ib-working-dir/worker/log-collector-script
-                    - sudo mkdir -p /ib-working-dir/worker/nodeadm
-                    - sudo mkdir -p /ib-working-dir/worker/gpu
-                    - sudo cp -R amazon-eks-ami/templates/shared/runtime/* /ib-working-dir/worker/shared
-                    - sudo cp -R amazon-eks-ami/templates/al2023/runtime/gpu/* /ib-working-dir/worker/gpu
-                    - sudo cp -R amazon-eks-ami/templates/al2023/runtime/rootfs/* /ib-working-dir/worker/rootfs
+                    - sudo mkdir -p /ib-working-dir/worker/log-collector-script/
+                    - sudo cp -R amazon-eks-ami/templates/shared/runtime/* /ib-working-dir/worker
+                    - sudo cp -R amazon-eks-ami/templates/al2/runtime/* /ib-working-dir/worker
                     - sudo cp -R amazon-eks-ami/log-collector-script/linux/* /ib-working-dir/worker/log-collector-script/
-                    - sudo mkdir -p /etc/eks/log-collector-script/
-                    - sudo cp -v /ib-working-dir/worker/log-collector-script/eks-log-collector.sh /etc/eks/log-collector-script/
-                    - sudo cp -R amazon-eks-ami/nodeadm/* /ib-working-dir/worker/nodeadm
-                    - sudo cp -rv /ib-working-dir/worker/rootfs/* /
-                    - sudo chmod -R a+x /ib-working-dir/worker/shared/bin/
-                    - sudo cp -rv /ib-working-dir/worker/shared/bin/* /usr/bin
-                    - sudo chmod -R a+x /ib-working-dir/worker/gpu/*
+              - name: InstallAdditionalRepos
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/install-additional-repos.sh
+              - name: CopyBinariesToUSRBIN
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - sudo chmod -R a+x /ib-working-dir/worker/bin/
+                    - sudo mv /ib-working-dir/worker/bin/* /usr/bin/
+              - name: UpgradeKernelVersion
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - |
+                      export KUBERNETES_VERSION=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
+                      export KERNEL_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .kernel_version)
+                      bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/upgrade-kernel.sh
               - name: EnableFips
                 action: ExecuteBash
                 inputs:
                   commands:
                     - |
-                      export ENABLE_FIPS=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .enable_fips)
-                      bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/enable-fips.sh
-              - name: EnableEFA
+                      export ENABLE_FIPS=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .enable_fips)
+                      bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/enable-fips.sh
+              - name: Reboot
                 action: ExecuteBash
                 inputs:
                   commands:
                     - |
-                      export ENABLE_EFA=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .enable_efa)
-                      bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/limit-c-states.sh
+                      if [ -f "reboot_done" ]; then
+                         echo 'Reboot was done'
+                         exit 0
+                      else
+                         touch /ib-working-dir/reboot_done
+                         sudo reboot
+                         exit 194
+                      fi
               - name: InstallK8sComponents
                 action: ExecuteBash
                 inputs:
                   commands:
+                    - export KUBERNETES_VERSION=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
+                    - export KUBERNETES_BUILD_DATE=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f2 | cut -d "=" -f2)
+                    - export BINARY_BUCKET_NAME=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .binary_bucket_name)
+                    - export BINARY_BUCKET_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .binary_bucket_region)
+                    - export DOCKER_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .docker_version)
+                    - export CONTAINERD_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .containerd_version)
+                    - export RUNC_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .runc_version)
+                    - export CNI_PLUGIN_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .cni_plugin_version)
+                    - export PULL_CNI_FROM_GITHUB=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .pull_cni_from_github)
+                    - export PAUSE_CONTAINER_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .pause_container_version)
+                    - export CACHE_CONTAINER_IMAGES=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .cache_container_images)
+                    - export WORKING_DIR="/ib-working-dir/worker"
+                    - export USER=ec2-user
                     - export AWS_ACCESS_KEY_ID=""
                     - export AWS_SECRET_ACCESS_KEY=""
-                    - export AWS_SESSION_TOKEN=""
-                    - export BINARY_BUCKET_NAME=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .binary_bucket_name)
-                    - export BINARY_BUCKET_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .binary_bucket_region)
-                    - export CONTAINERD_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .containerd_version)
-                    - export KUBERNETES_BUILD_DATE=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f2 | cut -d "=" -f2)
-                    - export KUBERNETES_VERSION=$(/ib-working-dir/amazon-eks-ami/hack/latest-binaries.sh {{ EKSClusterVersion }} | cut -d " " -f1 | cut -d "=" -f2)
-                    - export RUNC_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .runc_version)
-                    - export SSM_AGENT_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .ssm_agent_version)
-                    - export WORKING_DIR="/ib-working-dir/worker"
-                    - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/install-worker.sh
-              - name: InstallNodeadm
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - export BUILD_IMAGE=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .nodeadm_build_image)
-                    - export PROJECT_DIR=/ib-working-dir/worker/nodeadm
-                    - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/install-nodeadm.sh
-              - name: InstallNeuronDriver
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - export AWS_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .aws_region)
-                    - export ENABLE_ACCELERATOR=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .enable_accelerator)
-                    - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/install-neuron-driver.sh
-              - name: InstallNvidiaDriver
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - export AWS_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .aws_region)
-                    - export ENABLE_ACCELERATOR=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .enable_accelerator)
-                    - export NVIDIA_DRIVER_MAJOR_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .nvidia_driver_major_version)
-                    - export WORKING_DIR="/ib-working-dir/worker"
-                    - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/install-nvidia-driver.sh
-              - name: InstallEFA
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - export AWS_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .aws_region)
-                    - export ENABLE_EFA=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .enable_efa)
-                    - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/install-efa.sh
-              - name: UpdateSELinuxPolicy
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - sudo semanage fcontext -a -t bin_t "/usr/bin/nodeadm"
-                    - sudo semanage fcontext -a -t bin_t "/usr/bin/kubelet"
-                    - sudo restorecon -r -v /usr/bin/nodeadm
-                    - sudo restorecon -r -v /usr/bin/kubelet
-              - name: DisableNftables
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - sudo systemctl disable nftables
-              - name: UpdateIptables
-                action: ExecuteBash
-                inputs:
-                  commands:
-                    - sudo iptables -I INPUT -p tcp -m tcp --dport 10250 -j ACCEPT
-                    - sudo iptables-save
+                    - export SSM_AGENT_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .ssm_agent_version)
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/install-worker.sh
               - name: Cleanup
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - sudo yum clean all
-                    - sudo rm -rf /var/cache/yum
-                    - sudo rm -rf /etc/hostname /etc/resolv.conf /etc/ssh/ssh_host* /home/ec2-user/.ssh/authorized_keys /root/.ssh/authorized_keys /var/lib/cloud/data /var/lib/cloud/instance /var/lib/cloud/instances /var/lib/cloud/sem /var/lib/dhclient/* /var/lib/dhcp/dhclient.* /var/lib/yum/history /var/lib/dnf/history* /var/log/cloud-init-output.log /var/log/cloud-init.log /var/log/secure /var/log/wtmp /var/log/messages /var/log/audit/*
-                    - sudo cp /dev/null /etc/machine-id
+                    - bash /ib-working-dir/amazon-eks-ami/templates/shared/provisioners/cleanup.sh
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/cleanup-additional-repos.sh
               - name: Validate
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/validate.sh
+                    - export KERNEL_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2/variables-default.json | jq -r .kernel_version)
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2/provisioners/validate.sh
   
   EKSCISAMIRecipe:
     Type: 'AWS::ImageBuilder::ImageRecipe'
@@ -458,10 +426,6 @@ Resources:
               Action:
                 - 'sns:Publish'
               Resource: !Ref 'CodebuildStatusSNSTopic'
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-              Resource: !Sub 'arn:aws:s3:::${ReleaseNotesS3Bucket}/releaseHistory.json'
             
   CheckNewAMIReleaseFunction:
     Type: AWS::Lambda::Function
@@ -691,11 +655,6 @@ Resources:
                 Effect: Allow
                 Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactStoreBucket}*'
               - Action:
-                - 'eks:DescribeCluster'
-                Effect: Allow
-                Resource:
-                - !Sub 'arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${TestClusterName}'
-              - Action:
                 - 'codebuild:CreateReportGroup'
                 - 'codebuild:CreateReport'
                 - 'codebuild:UpdateReport'
@@ -811,7 +770,7 @@ Resources:
             build:
               commands:
                 - |
-                  for path in ""
+                  for path in "" new/ sku
                   do
                     status_code=$(curl -o /dev/null -s -w "%{http_code}\n" $LoadBalancerDNS/$path)
                     echo $status_code
