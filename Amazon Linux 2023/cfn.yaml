@@ -508,6 +508,7 @@ Resources:
         Variables:
           REGION: !Ref AWS::Region
           SNS_TOPIC: !Ref CodebuildStatusSNSTopic
+          S3_BUCKET: !Ref ReleaseNotesS3Bucket
       Code:
         S3Bucket: !Ref S3Bucket
         S3Key: codebuildStatusNotification.zip
