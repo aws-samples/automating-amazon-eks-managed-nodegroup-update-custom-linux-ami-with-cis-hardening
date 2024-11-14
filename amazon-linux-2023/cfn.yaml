@@ -100,7 +100,7 @@ Resources:
                 action: ExecuteBash
                 inputs:
                   commands:
-                    - sudo yum install -y git jq
+                    - sudo yum install -y git jq container-selinux
                     - sudo git clone https://github.com/awslabs/amazon-eks-ami.git
                     - sudo mkdir -p /ib-working-dir/worker
                     - sudo mkdir -p /ib-working-dir/worker/rootfs
@@ -153,9 +153,25 @@ Resources:
                 action: ExecuteBash
                 inputs:
                   commands:
+                    - export AWS_ACCESS_KEY_ID=""
+                    - export AWS_SECRET_ACCESS_KEY=""
+                    - export AWS_SESSION_TOKEN=""
+                    - export BINARY_BUCKET_NAME=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .binary_bucket_name)
+                    - export BINARY_BUCKET_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .binary_bucket_region)
+                    - export AWS_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .aws_region)
                     - export BUILD_IMAGE=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .nodeadm_build_image)
                     - export PROJECT_DIR=/ib-working-dir/worker/nodeadm
                     - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/install-nodeadm.sh
+              - name: CachePauseContainer
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - export AWS_ACCESS_KEY_ID=""
+                    - export AWS_SECRET_ACCESS_KEY=""
+                    - export AWS_SESSION_TOKEN=""
+                    - export AWS_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .aws_region)
+                    - export PAUSE_CONTAINER_IMAGE=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .pause_container_image)
+                    - bash /ib-working-dir/amazon-eks-ami/templates/al2023/provisioners/cache-pause-container.sh
               - name: InstallNeuronDriver
                 action: ExecuteBash
                 inputs:
@@ -167,6 +183,9 @@ Resources:
                 action: ExecuteBash
                 inputs:
                   commands:
+                    - export AWS_ACCESS_KEY_ID=""
+                    - export AWS_SECRET_ACCESS_KEY=""
+                    - export AWS_SESSION_TOKEN=""
                     - export AWS_REGION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .aws_region)
                     - export ENABLE_ACCELERATOR=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .enable_accelerator)
                     - export NVIDIA_DRIVER_MAJOR_VERSION=$(cat /ib-working-dir/amazon-eks-ami/templates/al2023/variables-default.json | jq -r .nvidia_driver_major_version)
@@ -228,6 +247,20 @@ Resources:
     Metadata:
       Comment: Role to be used by instance during image build.
     Properties:
+      Policies:
+      - PolicyName: ecrPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: 'ecr:GetAuthorizationToken'
+              Resource: '*'
+            - Effect: Allow
+              Action: 
+                - 'ecr:BatchGetImage'
+                - 'ecr:BatchCheckLayerAvailability'
+                - 'ecr:GetDownloadUrlForLayer'
+              Resource: !Sub 'arn:aws:ecr:${AWS::Region}:602401143452:repository/*'
       ManagedPolicyArns:
         - 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
         - 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/EC2InstanceProfileForImageBuilder'
