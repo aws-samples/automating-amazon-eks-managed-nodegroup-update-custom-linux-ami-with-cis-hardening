@@ -1,5 +1,5 @@
-# eks-node-update-automation
-Automating EKS Managed Nodegroup update for Custom Amazon Linux 2 AMIs using EC2 Image Builder and Code Pipeline
+# Automating AL2023 custom hardened AMI updates for Amazon EKS managed nodes
+Automating EKS Managed Nodegroup update for Custom Amazon Linux 2023 AMIs using EC2 Image Builder and Code Pipeline
 
 ## Solution Architecture
 
