@@ -27,7 +27,9 @@ def lambda_handler(event, context):
     RECOMMENDED_EKS_AMI_ID = ssm.get_parameter(Name=f'/aws/service/eks/optimized-ami/{CLUSTER_VERSION}/amazon-linux-2023/x86_64/standard/recommended/image_id')['Parameter']['Value']
     
     #Below we find the AMI ID and creation date of the latest CIS Level 2 AMI.
+    CIS_OWNER_ID = "679593333241"  # Official CIS AWS Account
     CIS_LEVEL2_AMIS = ec2.describe_images(
+        Owners=[CIS_OWNER_ID],
         Filters=[
             {
                 'Name': 'name',
